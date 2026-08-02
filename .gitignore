@@ -1,0 +1,24 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Windows
+Thumbs.db
+Desktop.ini
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# エディタ・IDE
+.vscode/
+.idea/
+
+# ローカル実行時の出力・秘密情報
+volume_spike_*.csv
+.env
