@@ -29,7 +29,7 @@ MIN_AVG_VALUE = 1_000_000_000  # 平均売買代金の下限(円)。10億円/日
 EXCLUDE_ZERO_VOL_DAYS = True   # 過去7日に出来高ゼロの日がある銘柄を除外
 BATCH_SIZE = 200               # yfinanceの一括ダウンロード単位
 SKIP_IF_STALE = True           # 最新データが当日でない(=休場日)ならメールを送らず終了
-MAIL_TO = "harumi.hobby@gmail.com"
+MAIL_TO = os.environ.get("MAIL_TO", "")
 MARKETS = ["プライム（内国株式）", "スタンダード（内国株式）", "グロース（内国株式）"]
 # 全市場対象にするなら MARKETS = None
 # ========================================
