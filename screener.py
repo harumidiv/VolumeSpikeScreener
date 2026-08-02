@@ -30,8 +30,7 @@ EXCLUDE_ZERO_VOL_DAYS = True   # 過去7日に出来高ゼロの日がある銘�
 BATCH_SIZE = 200               # yfinanceの一括ダウンロード単位
 SKIP_IF_STALE = True           # 最新データが当日でない(=休場日)ならメールを送らず終了
 MAIL_TO = "harumi.hobby@gmail.com"
-MARKETS = ["プライム(内国株式)", "プライム(内国株式)",
-           "プライム（内国株式）", "スタンダード（内国株式）", "グロース（内国株式）"]
+MARKETS = ["プライム（内国株式）", "スタンダード（内国株式）", "グロース（内国株式）"]
 # 全市場対象にするなら MARKETS = None
 # ========================================
 
@@ -167,8 +166,9 @@ def send_mail(msg, sender, app_password):
 def main():
     sender = os.environ.get("GMAIL_ADDRESS")
     app_password = os.environ.get("GMAIL_APP_PASSWORD")
-    if not sender or not app_password:
-        sys.exit("環境変数 GMAIL_ADDRESS / GMAIL_APP_PASSWORD が未設定です。")
+    mail_enabled = bool(sender and app_password)
+    if not mail_enabled:
+        print("GMAIL_ADDRESS / GMAIL_APP_PASSWORD が未設定のため、メール送信をスキップします。")
 
     tickers_df = get_ticker_list()
     result, latest_date = screen(tickers_df)
@@ -181,6 +181,9 @@ def main():
     if not result.empty:
         result = result.sort_values("出来高倍率", ascending=False).reset_index(drop=True)
         print(result.to_string(index=False))
+
+    if not mail_enabled:
+        return
 
     msg = build_mail(result, latest_date or today_jst, sender)
     send_mail(msg, sender, app_password)
