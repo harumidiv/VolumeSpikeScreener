@@ -24,8 +24,7 @@ from email.mime.application import MIMEApplication
 from email.mime.image import MIMEImage
 import matplotlib
 matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-plt.rcParams['font.family'] = ['Noto Sans CJK JP', 'sans-serif']
+import japanize_matplotlib  # noqa: F401
 import mplfinance as mpf
 import tempfile
 
@@ -33,7 +32,7 @@ import tempfile
 RATIO_THRESHOLD = 1.0          # 前場出来高 ÷ 7日平均全日出来高のしきい値
 AVG_DAYS = 7                   # 平均をとる過去営業日数
 MIN_AVG_VOLUME = 10_000        # 平均出来高(株数)の下限
-MIN_AVG_VALUE = 1_000_000_000  # 平均売買代金の下限(円)
+MIN_AVG_VALUE = 5_000_000_000  # 平均売買代金の下限(円)
 EXCLUDE_ZERO_VOL_DAYS = True   # 過去7日に出来高ゼロの日がある銘柄を除外
 BATCH_SIZE = 200               # yfinanceの一括ダウンロード単位
 EXCLUDE_SMALL_CAP = True       # 小型株を除外
@@ -192,7 +191,7 @@ KABUTAN_HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7
 
 
 def get_kabutan_disclosures(code, target_date):
-    """株探から当日の銘柄開示情報を取得する（最大3件）"""
+    """株探から直近7日以内の銘柄開示情報を取得する（最大3件）"""
     url = f"https://kabutan.jp/stock/news?code={code}&nmode=3"
     try:
         resp = requests.get(url, headers=KABUTAN_HEADERS, timeout=10)
@@ -201,6 +200,7 @@ def get_kabutan_disclosures(code, target_date):
         print(f"  開示情報取得失敗 {code}: {e}")
         return []
 
+    cutoff = target_date - timedelta(days=7)
     disclosures = []
     for row in resp.text.split("<tr>"):
         m_time = re.search(r'datetime="([^"]+)"', row)
@@ -211,7 +211,7 @@ def get_kabutan_disclosures(code, target_date):
             dt = datetime.fromisoformat(m_time.group(1)).date()
         except Exception:
             continue
-        if dt == target_date:
+        if cutoff < dt <= target_date:
             title = re.sub(r'\s+', ' ', m_link.group(2)).strip()
             disclosures.append((title, m_link.group(1)))
 
