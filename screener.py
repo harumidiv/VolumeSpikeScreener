@@ -20,6 +20,10 @@ from datetime import date, datetime, timezone, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.application import MIMEApplication
+import matplotlib
+matplotlib.use('Agg')
+import mplfinance as mpf
+import tempfile
 
 # ================= 設定 =================
 RATIO_THRESHOLD = 2.0          # 出来高倍率のしきい値(2倍以上)
@@ -57,6 +61,7 @@ def get_ticker_list():
 
 def screen(tickers_df):
     results = []
+    chart_data = {}
     latest_date = None
     tickers = tickers_df["ticker"].tolist()
     name_map = dict(zip(tickers_df["ticker"], tickers_df["銘柄名"]))
@@ -103,6 +108,7 @@ def screen(tickers_df):
 
                 ratio = today_vol / avg_vol
                 if ratio >= RATIO_THRESHOLD:
+                    chart_data[t] = df.tail(63).copy()
                     prev_close = close.iloc[-2] if len(close) >= 2 else None
                     last_close = close.iloc[-1]
                     chg = (last_close / prev_close - 1) * 100 if prev_close else None
@@ -122,10 +128,37 @@ def screen(tickers_df):
                 continue
         time.sleep(1)
 
-    return pd.DataFrame(results), latest_date
+    return pd.DataFrame(results), latest_date, chart_data
 
 
-def build_mail(result: pd.DataFrame, data_date, sender: str):
+def generate_chart(ticker, name, df):
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as f:
+            tmp_path = f.name
+        mpf.plot(
+            df,
+            type='candle',
+            style='yahoo',
+            title=f"{ticker.replace('.T', '')} {name}",
+            volume=True,
+            savefig=tmp_path,
+            figsize=(10, 6),
+        )
+        with open(tmp_path, 'rb') as f:
+            return f.read()
+    except Exception as e:
+        print(f"チャート生成失敗 {ticker}: {e}")
+        return None
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+
+
+def build_mail(result: pd.DataFrame, data_date, sender: str, charts=None):
     msg = MIMEMultipart()
     msg["From"] = sender
     msg["To"] = MAIL_TO
@@ -153,6 +186,15 @@ def build_mail(result: pd.DataFrame, data_date, sender: str):
     part = MIMEApplication(csv_bytes, Name=f"volume_spike_{data_date}.csv")
     part["Content-Disposition"] = f'attachment; filename="volume_spike_{data_date}.csv"'
     msg.attach(part)
+
+    if charts:
+        for ticker, img_bytes in charts.items():
+            if img_bytes:
+                code = ticker.replace('.T', '')
+                part = MIMEApplication(img_bytes, Name=f"{code}.png")
+                part["Content-Disposition"] = f'attachment; filename="{code}.png"'
+                msg.attach(part)
+
     return msg
 
 
@@ -171,7 +213,7 @@ def main():
         print("GMAIL_ADDRESS / GMAIL_APP_PASSWORD が未設定のため、メール送信をスキップします。")
 
     tickers_df = get_ticker_list()
-    result, latest_date = screen(tickers_df)
+    result, latest_date, chart_data = screen(tickers_df)
 
     today_jst = datetime.now(JST).date()
     if SKIP_IF_STALE and latest_date and latest_date < today_jst:
@@ -188,7 +230,14 @@ def main():
     if not mail_enabled:
         return
 
-    msg = build_mail(result, latest_date or today_jst, sender)
+    name_map = dict(zip(tickers_df["ticker"], tickers_df["銘柄名"]))
+    charts = {}
+    for _, row in result.iterrows():
+        t = row["コード"] + ".T"
+        if t in chart_data:
+            charts[t] = generate_chart(t, name_map.get(t, ""), chart_data[t])
+
+    msg = build_mail(result, latest_date or today_jst, sender, charts)
     send_mail(msg, sender, app_password)
 
 
