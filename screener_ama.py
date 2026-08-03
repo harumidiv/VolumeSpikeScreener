@@ -20,6 +20,7 @@ from datetime import datetime, timezone, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.application import MIMEApplication
+from email.mime.image import MIMEImage
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -225,28 +226,51 @@ def build_mail(result, data_date, sender, mail_to, charts=None):
         return msg
 
     msg["Subject"] = f"[前場スクリーナー] {data_date} 該当 {len(result)} 銘柄"
-    lines = [f"{data_date} 前場出来高急増銘柄(7日平均全日出来高超え)\n"]
+
+    rows = []
     for _, r in result.iterrows():
-        lines.append(
-            f"{r['コード']} {r['銘柄名']} [{r['市場']}／{r['規模']}]\n"
-            f"  前場出来高 {r['前場出来高']:,} / 7日平均 {r['7日平均出来高']:,} "
-            f"(倍率 {r['出来高倍率']}倍)\n"
+        code = r['コード']
+        url = f"https://finance.yahoo.co.jp/quote/{code}.T"
+        cid = f"chart_{code}"
+        rows.append(
+            f"<tr>"
+            f"<td><a href='{url}'>{code} {r['銘柄名']}</a></td>"
+            f"<td>{r['市場']}／{r['規模']}</td>"
+            f"<td style='text-align:right'>{r['前場出来高']:,}</td>"
+            f"<td style='text-align:right'>{r['7日平均出来高']:,}</td>"
+            f"<td style='text-align:right'>{r['出来高倍率']}倍</td>"
+            f"</tr>"
         )
-    lines.append("\n詳細は添付CSVをご覧ください。")
-    msg.attach(MIMEText("\n".join(lines), "plain", "utf-8"))
+        if charts and (code + ".T") in charts and charts[code + ".T"]:
+            rows.append(
+                f"<tr><td colspan='5'><img src='cid:{cid}' style='max-width:100%'></td></tr>"
+            )
+
+    html = f"""<html><body>
+<p>{data_date} 前場出来高急増銘柄（7日平均全日出来高超え）</p>
+<table border='1' cellpadding='4' cellspacing='0'>
+<tr><th>銘柄</th><th>市場／規模</th><th>前場出来高</th><th>7日平均出来高</th><th>倍率</th></tr>
+{"".join(rows)}
+</table>
+<p>詳細は添付CSVをご覧ください。</p>
+</body></html>"""
+
+    related = MIMEMultipart("related")
+    related.attach(MIMEText(html, "html", "utf-8"))
+    if charts:
+        for ticker, img_bytes in charts.items():
+            if img_bytes:
+                code = ticker.replace(".T", "")
+                img_part = MIMEImage(img_bytes)
+                img_part.add_header("Content-ID", f"<chart_{code}>")
+                img_part.add_header("Content-Disposition", "inline", filename=f"{code}.png")
+                related.attach(img_part)
+    msg.attach(related)
 
     csv_bytes = result.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
     part = MIMEApplication(csv_bytes, Name=f"ama_spike_{data_date}.csv")
     part["Content-Disposition"] = f'attachment; filename="ama_spike_{data_date}.csv"'
     msg.attach(part)
-
-    if charts:
-        for ticker, img_bytes in charts.items():
-            if img_bytes:
-                code = ticker.replace('.T', '')
-                part = MIMEApplication(img_bytes, Name=f"{code}.png")
-                part["Content-Disposition"] = f'attachment; filename="{code}.png"'
-                msg.attach(part)
 
     return msg
 
