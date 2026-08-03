@@ -22,6 +22,8 @@ from email.mime.text import MIMEText
 from email.mime.application import MIMEApplication
 import matplotlib
 matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+plt.rcParams['font.family'] = ['Noto Sans CJK JP', 'sans-serif']
 import mplfinance as mpf
 import tempfile
 
