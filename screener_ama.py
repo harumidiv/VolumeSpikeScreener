@@ -11,6 +11,7 @@
 
 import io
 import os
+import re
 import time
 import smtplib
 import requests
@@ -187,6 +188,36 @@ def screen(tickers_df):
     return pd.DataFrame(results), chart_data
 
 
+KABUTAN_HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"}
+
+
+def get_kabutan_disclosures(code, target_date):
+    """株探から当日の銘柄開示情報を取得する（最大3件）"""
+    url = f"https://kabutan.jp/stock/news?code={code}&nmode=3"
+    try:
+        resp = requests.get(url, headers=KABUTAN_HEADERS, timeout=10)
+        resp.raise_for_status()
+    except Exception as e:
+        print(f"  開示情報取得失敗 {code}: {e}")
+        return []
+
+    disclosures = []
+    for row in resp.text.split("<tr>"):
+        m_time = re.search(r'datetime="([^"]+)"', row)
+        m_link = re.search(r'href="(https://kabutan\.jp/disclosures/[^"]+)"[^>]*>([^<]+)', row)
+        if not m_time or not m_link:
+            continue
+        try:
+            dt = datetime.fromisoformat(m_time.group(1)).date()
+        except Exception:
+            continue
+        if dt == target_date:
+            title = re.sub(r'\s+', ' ', m_link.group(2)).strip()
+            disclosures.append((title, m_link.group(1)))
+
+    return disclosures[:3]
+
+
 def generate_chart(ticker, name, df):
     tmp_path = None
     try:
@@ -214,7 +245,7 @@ def generate_chart(ticker, name, df):
                 pass
 
 
-def build_mail(result, data_date, sender, mail_to, charts=None):
+def build_mail(result, data_date, sender, mail_to, charts=None, disclosures_map=None):
     msg = MIMEMultipart()
     msg["From"] = sender
     msg["To"] = mail_to
@@ -245,6 +276,10 @@ def build_mail(result, data_date, sender, mail_to, charts=None):
             rows.append(
                 f"<tr><td colspan='5'><img src='cid:{cid}' style='max-width:100%'></td></tr>"
             )
+        discs = disclosures_map.get(code, []) if disclosures_map else []
+        if discs:
+            links = "　".join(f"<a href='{u}'>{t}</a>" for t, u in discs)
+            rows.append(f"<tr><td colspan='5' style='font-size:0.9em'>📋 開示: {links}</td></tr>")
 
     html = f"""<html><body>
 <p>{data_date} 前場出来高急増銘柄（7日平均全日出来高超え）</p>
@@ -312,7 +347,17 @@ def main():
         if t in chart_data:
             charts[t] = generate_chart(t, name_map.get(t, ""), chart_data[t])
 
-    msg = build_mail(result, today_jst, sender, mail_to, charts)
+    print("開示情報を取得中...")
+    disclosures_map = {}
+    for _, row in result.iterrows():
+        code = row["コード"]
+        discs = get_kabutan_disclosures(code, today_jst)
+        if discs:
+            disclosures_map[code] = discs
+            print(f"  {code}: {len(discs)}件")
+        time.sleep(0.3)
+
+    msg = build_mail(result, today_jst, sender, mail_to, charts, disclosures_map)
     send_mail(msg, sender, app_password)
 
 
