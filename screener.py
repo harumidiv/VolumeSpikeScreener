@@ -178,9 +178,12 @@ def main():
         print(f"最新データ日付 {latest_date} が本日 {today_jst} より古いため休場日と判断し、メールは送信しません。")
         return
 
-    if not result.empty:
-        result = result.sort_values("出来高倍率", ascending=False).reset_index(drop=True)
-        print(result.to_string(index=False))
+    if result.empty:
+        print("該当銘柄なし。メールは送信しません。")
+        return
+
+    result = result.sort_values("出来高倍率", ascending=False).reset_index(drop=True)
+    print(result.to_string(index=False))
 
     if not mail_enabled:
         return

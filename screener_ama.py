@@ -226,9 +226,12 @@ def main():
 
     today_jst = datetime.now(JST).date()
 
-    if not result.empty:
-        result = result.sort_values("出来高倍率", ascending=False).reset_index(drop=True)
-        print(result.to_string(index=False))
+    if result.empty:
+        print("該当銘柄なし。メールは送信しません。")
+        return
+
+    result = result.sort_values("出来高倍率", ascending=False).reset_index(drop=True)
+    print(result.to_string(index=False))
 
     if not mail_enabled:
         return
