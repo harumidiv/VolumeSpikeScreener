@@ -169,9 +169,9 @@ def check_uwabanaare_aka2(ohlcv, today_open, today_last):
     day_before = complete.iloc[-2]
     yesterday = complete.iloc[-1]
     gap_up = float(yesterday["Open"]) > float(day_before["High"])
-    yesterday_red = float(yesterday["Close"]) < float(yesterday["Open"])
-    today_red = today_last < today_open
-    return gap_up and yesterday_red and today_red
+    yesterday_bullish = float(yesterday["Close"]) > float(yesterday["Open"])
+    today_bullish = today_last > today_open
+    return gap_up and yesterday_bullish and today_bullish
 
 
 def screen(tickers_df):
