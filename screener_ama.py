@@ -267,25 +267,22 @@ def build_mail(result, data_date, sender, mail_to, charts=None, disclosures_map=
         rows.append(
             f"<tr>"
             f"<td><a href='{url}'>{code} {r['銘柄名']}</a></td>"
-            f"<td>{r['市場']}／{r['規模']}</td>"
-            f"<td style='text-align:right'>{r['前場出来高']:,}</td>"
-            f"<td style='text-align:right'>{r['7日平均出来高']:,}</td>"
             f"<td style='text-align:right'>{r['出来高倍率']}倍</td>"
             f"</tr>"
         )
         if charts and (code + ".T") in charts and charts[code + ".T"]:
             rows.append(
-                f"<tr><td colspan='5'><img src='cid:{cid}' style='max-width:100%'></td></tr>"
+                f"<tr><td colspan='2'><img src='cid:{cid}' style='max-width:100%'></td></tr>"
             )
         discs = disclosures_map.get(code, []) if disclosures_map else []
         if discs:
             links = "　".join(f"<a href='{u}'>{t}</a>" for t, u in discs)
-            rows.append(f"<tr><td colspan='5' style='font-size:0.9em'>📋 開示: {links}</td></tr>")
+            rows.append(f"<tr><td colspan='2' style='font-size:0.9em'>📋 開示: {links}</td></tr>")
 
     html = f"""<html><body>
 <p>{data_date} 前場出来高急増銘柄（7日平均全日出来高超え）</p>
 <table border='1' cellpadding='4' cellspacing='0'>
-<tr><th>銘柄</th><th>市場／規模</th><th>前場出来高</th><th>7日平均出来高</th><th>倍率</th></tr>
+<tr><th>銘柄</th><th>倍率</th></tr>
 {"".join(rows)}
 </table>
 <p>詳細は添付CSVをご覧ください。</p>

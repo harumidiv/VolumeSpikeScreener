@@ -215,27 +215,25 @@ def build_mail(result: pd.DataFrame, data_date, sender: str, charts=None, disclo
         rows.append(
             f"<tr>"
             f"<td><a href='{url}'>{code} {r['銘柄名']}</a></td>"
-            f"<td>{r['市場']}</td>"
             f"<td style='text-align:right'>{r['終値']:,}円</td>"
             f"<td style='text-align:right'>{chg}</td>"
             f"<td style='text-align:right'>{r['出来高倍率']}倍</td>"
             f"<td style='text-align:right'>{r['当日出来高']:,}</td>"
-            f"<td style='text-align:right'>{r['7日平均出来高']:,}</td>"
             f"</tr>"
         )
         if charts and (code + ".T") in charts and charts[code + ".T"]:
             rows.append(
-                f"<tr><td colspan='7'><img src='cid:{cid}' style='max-width:100%'></td></tr>"
+                f"<tr><td colspan='5'><img src='cid:{cid}' style='max-width:100%'></td></tr>"
             )
         discs = disclosures_map.get(code, []) if disclosures_map else []
         if discs:
             links = "　".join(f"<a href='{u}'>{t}</a>" for t, u in discs)
-            rows.append(f"<tr><td colspan='7' style='font-size:0.9em'>📋 開示: {links}</td></tr>")
+            rows.append(f"<tr><td colspan='5' style='font-size:0.9em'>📋 開示: {links}</td></tr>")
 
     html = f"""<html><body>
 <p>{data_date} 出来高急増銘柄（7日平均の{RATIO_THRESHOLD}倍以上、平均売買代金{MIN_AVG_VALUE // 100_000_000}億円/日以上）</p>
 <table border='1' cellpadding='4' cellspacing='0'>
-<tr><th>銘柄</th><th>市場</th><th>終値</th><th>前日比</th><th>倍率</th><th>当日出来高</th><th>7日平均出来高</th></tr>
+<tr><th>銘柄</th><th>終値</th><th>前日比</th><th>倍率</th><th>当日出来高</th></tr>
 {"".join(rows)}
 </table>
 <p>詳細は添付CSVをご覧ください。</p>
