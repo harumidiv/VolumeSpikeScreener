@@ -184,6 +184,7 @@ def screen(tickers_df):
     ama_data = get_ama_volume(valid_tickers)
 
     results = []
+    pattern_results = []
     chart_data = {}
     for t in valid_tickers:
         if t not in ama_data:
@@ -192,9 +193,10 @@ def screen(tickers_df):
         ama_vol = ama_info["volume"]
         avg_vol = avg_data[t]["avg_vol"]
         ratio = ama_vol / avg_vol
+        ohlcv = avg_data[t]["ohlcv"]
+        is_pattern = check_uwabanaare_aka2(ohlcv, ama_info["today_open"], ama_info["today_last"])
+
         if ratio >= RATIO_THRESHOLD:
-            ohlcv = avg_data[t]["ohlcv"]
-            is_pattern = check_uwabanaare_aka2(ohlcv, ama_info["today_open"], ama_info["today_last"])
             chart_data[t] = ohlcv
             results.append({
                 "コード": t.replace(".T", ""),
@@ -208,7 +210,17 @@ def screen(tickers_df):
                 "日付": datetime.now(JST).date(),
             })
 
-    return pd.DataFrame(results), chart_data
+        if is_pattern:
+            if t not in chart_data:
+                chart_data[t] = ohlcv
+            pattern_results.append({
+                "コード": t.replace(".T", ""),
+                "銘柄名": name_map.get(t, ""),
+                "出来高倍率": round(float(ratio), 2),
+                "日付": datetime.now(JST).date(),
+            })
+
+    return pd.DataFrame(results), pd.DataFrame(pattern_results), chart_data
 
 
 KABUTAN_HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"}
@@ -332,6 +344,51 @@ def build_mail(result, data_date, sender, mail_to, charts=None, disclosures_map=
     return msg
 
 
+def build_pattern_mail(pattern_result, data_date, sender, mail_to, charts=None):
+    msg = MIMEMultipart()
+    msg["From"] = sender
+    msg["To"] = mail_to
+    msg["Subject"] = f"[上離れ赤2本] {data_date} 該当 {len(pattern_result)} 銘柄"
+
+    rows = []
+    for _, r in pattern_result.iterrows():
+        code = r["コード"]
+        url = f"https://finance.yahoo.co.jp/quote/{code}.T"
+        cid = f"chart_{code}"
+        rows.append(
+            f"<tr>"
+            f"<td><a href='{url}'>{code} {r['銘柄名']}</a></td>"
+            f"<td style='text-align:right'>{r['出来高倍率']}倍</td>"
+            f"</tr>"
+        )
+        if charts and (code + ".T") in charts and charts[code + ".T"]:
+            rows.append(
+                f"<tr><td colspan='2'><img src='cid:{cid}' style='max-width:100%'></td></tr>"
+            )
+
+    html = f"""<html><body>
+<p>{data_date} 前場時点で上離れ赤2本パターン検出銘柄（平均売買代金5億円/日以上）</p>
+<table border='1' cellpadding='4' cellspacing='0'>
+<tr><th>銘柄</th><th>前場出来高倍率</th></tr>
+{"".join(rows)}
+</table>
+</body></html>"""
+
+    related = MIMEMultipart("related")
+    related.attach(MIMEText(html, "html", "utf-8"))
+    if charts:
+        for ticker, img_bytes in charts.items():
+            code = ticker.replace(".T", "")
+            if img_bytes and any(r["コード"] == code for _, r in pattern_result.iterrows()):
+                img_part = MIMEImage(img_bytes)
+                img_part.add_header("Content-ID", f"<chart_{code}>")
+                img_part.add_header("Content-Disposition", "inline", filename=f"{code}.png")
+                related.attach(img_part)
+    msg.attach(related)
+
+    return msg
+
+
 def send_mail(msg, sender, app_password):
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
         server.login(sender, app_password)
@@ -353,39 +410,53 @@ def main():
         print("GMAIL_ADDRESS / GMAIL_APP_PASSWORD が未設定のため、メール送信をスキップします。")
 
     tickers_df = get_ticker_list()
-    result, chart_data = screen(tickers_df)
+    result, pattern_result, chart_data = screen(tickers_df)
 
     today_jst = datetime.now(JST).date()
-
-    if result.empty:
-        print("該当銘柄なし。メールは送信しません。")
-        return
-
-    result = result.sort_values("出来高倍率", ascending=False).reset_index(drop=True)
-    print(result.to_string(index=False))
-
-    if not mail_enabled:
-        return
-
     name_map = dict(zip(tickers_df["ticker"], tickers_df["銘柄名"]))
+
+    # チャート生成（出来高急増＋パターン両方の対象）
     charts = {}
-    for _, row in result.iterrows():
-        t = row["コード"] + ".T"
+    all_codes = set()
+    if not result.empty:
+        all_codes.update(result["コード"].tolist())
+    if not pattern_result.empty:
+        all_codes.update(pattern_result["コード"].tolist())
+    for code in all_codes:
+        t = code + ".T"
         if t in chart_data:
             charts[t] = generate_chart(t, name_map.get(t, ""), chart_data[t])
 
-    print("開示情報を取得中...")
-    disclosures_map = {}
-    for _, row in result.iterrows():
-        code = row["コード"]
-        discs = get_kabutan_disclosures(code, today_jst)
-        if discs:
-            disclosures_map[code] = discs
-            print(f"  {code}: {len(discs)}件")
-        time.sleep(0.3)
+    if result.empty:
+        print("出来高急増：該当銘柄なし。")
+    else:
+        result = result.sort_values("出来高倍率", ascending=False).reset_index(drop=True)
+        print(result.to_string(index=False))
 
-    msg = build_mail(result, today_jst, sender, mail_to, charts, disclosures_map)
-    send_mail(msg, sender, app_password)
+        if mail_enabled:
+            print("開示情報を取得中...")
+            disclosures_map = {}
+            for _, row in result.iterrows():
+                code = row["コード"]
+                discs = get_kabutan_disclosures(code, today_jst)
+                if discs:
+                    disclosures_map[code] = discs
+                    print(f"  {code}: {len(discs)}件")
+                time.sleep(0.3)
+
+            msg = build_mail(result, today_jst, sender, mail_to, charts, disclosures_map)
+            send_mail(msg, sender, app_password)
+
+    if pattern_result.empty:
+        print("上離れ赤2本：該当銘柄なし。")
+    else:
+        pattern_result = pattern_result.sort_values("出来高倍率", ascending=False).reset_index(drop=True)
+        print(f"上離れ赤2本 該当 {len(pattern_result)} 銘柄")
+        print(pattern_result.to_string(index=False))
+
+        if mail_enabled:
+            msg = build_pattern_mail(pattern_result, today_jst, sender, mail_to, charts)
+            send_mail(msg, sender, app_password)
 
 
 if __name__ == "__main__":
