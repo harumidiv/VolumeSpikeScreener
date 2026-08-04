@@ -147,12 +147,31 @@ def get_ama_volume(tickers):
                 if ama.empty:
                     continue
 
-                results[t] = int(ama["Volume"].sum())
+                results[t] = {
+                    "volume": int(ama["Volume"].sum()),
+                    "today_open": float(ama["Open"].iloc[0]),
+                    "today_last": float(ama["Close"].iloc[-1]),
+                }
             except Exception:
                 continue
         time.sleep(1)
 
     return results
+
+
+def check_uwabanaare_aka2(ohlcv, today_open, today_last):
+    """前日がギャップアップ陰線、かつ今日前場も陰線進行中なら True"""
+    today_date = datetime.now(JST).date()
+    idx_dates = [ts.date() for ts in ohlcv.index]
+    complete = ohlcv[[d < today_date for d in idx_dates]]
+    if len(complete) < 2:
+        return False
+    day_before = complete.iloc[-2]
+    yesterday = complete.iloc[-1]
+    gap_up = float(yesterday["Open"]) > float(day_before["High"])
+    yesterday_red = float(yesterday["Close"]) < float(yesterday["Open"])
+    today_red = today_last < today_open
+    return gap_up and yesterday_red and today_red
 
 
 def screen(tickers_df):
@@ -169,11 +188,14 @@ def screen(tickers_df):
     for t in valid_tickers:
         if t not in ama_data:
             continue
-        ama_vol = ama_data[t]
+        ama_info = ama_data[t]
+        ama_vol = ama_info["volume"]
         avg_vol = avg_data[t]["avg_vol"]
         ratio = ama_vol / avg_vol
         if ratio >= RATIO_THRESHOLD:
-            chart_data[t] = avg_data[t]["ohlcv"]
+            ohlcv = avg_data[t]["ohlcv"]
+            is_pattern = check_uwabanaare_aka2(ohlcv, ama_info["today_open"], ama_info["today_last"])
+            chart_data[t] = ohlcv
             results.append({
                 "コード": t.replace(".T", ""),
                 "銘柄名": name_map.get(t, ""),
@@ -182,6 +204,7 @@ def screen(tickers_df):
                 "前場出来高": ama_vol,
                 "7日平均出来高": int(avg_vol),
                 "出来高倍率": round(float(ratio), 2),
+                "上離れ赤2本": is_pattern,
                 "日付": datetime.now(JST).date(),
             })
 
@@ -264,9 +287,10 @@ def build_mail(result, data_date, sender, mail_to, charts=None, disclosures_map=
         code = r['コード']
         url = f"https://finance.yahoo.co.jp/quote/{code}.T"
         cid = f"chart_{code}"
+        pattern_mark = "★" if r.get("上離れ赤2本") else ""
         rows.append(
             f"<tr>"
-            f"<td><a href='{url}'>{code} {r['銘柄名']}</a></td>"
+            f"<td><a href='{url}'>{code} {r['銘柄名']}</a> {pattern_mark}</td>"
             f"<td style='text-align:right'>{r['出来高倍率']}倍</td>"
             f"</tr>"
         )
@@ -282,7 +306,7 @@ def build_mail(result, data_date, sender, mail_to, charts=None, disclosures_map=
     html = f"""<html><body>
 <p>{data_date} 前場出来高急増銘柄（7日平均全日出来高超え）</p>
 <table border='1' cellpadding='4' cellspacing='0'>
-<tr><th>銘柄</th><th>倍率</th></tr>
+<tr><th>銘柄（★=上離れ赤2本）</th><th>倍率</th></tr>
 {"".join(rows)}
 </table>
 <p>詳細は添付CSVをご覧ください。</p>
