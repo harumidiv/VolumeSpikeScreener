@@ -27,6 +27,7 @@ matplotlib.use('Agg')
 import japanize_matplotlib  # noqa: F401
 import mplfinance as mpf
 import tempfile
+import jpholiday
 
 # ================= 設定 =================
 RATIO_THRESHOLD = 2.0          # 出来高倍率のしきい値(2倍以上)
@@ -268,6 +269,11 @@ def send_mail(msg, sender, app_password):
 
 
 def main():
+    today = datetime.now(JST).date()
+    if today.weekday() >= 5 or jpholiday.is_holiday(today):
+        print(f"{today} は土日または祝日のため処理をスキップします。")
+        return
+
     sender = os.environ.get("GMAIL_ADDRESS")
     app_password = os.environ.get("GMAIL_APP_PASSWORD")
     mail_enabled = bool(sender and app_password)

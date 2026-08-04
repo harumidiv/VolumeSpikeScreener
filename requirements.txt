@@ -6,3 +6,4 @@ openpyxl
 mplfinance
 japanize-matplotlib
 setuptools
+jpholiday
