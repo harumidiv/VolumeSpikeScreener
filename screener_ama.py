@@ -150,6 +150,8 @@ def get_ama_volume(tickers):
                 results[t] = {
                     "volume": int(ama["Volume"].sum()),
                     "today_open": float(ama["Open"].iloc[0]),
+                    "today_high": float(ama["High"].max()),
+                    "today_low": float(ama["Low"].min()),
                     "today_last": float(ama["Close"].iloc[-1]),
                 }
             except Exception:
@@ -159,8 +161,25 @@ def get_ama_volume(tickers):
     return results
 
 
+def _append_today_candle(ohlcv, ama_info):
+    today = datetime.now(JST).date()
+    if any(ts.date() == today for ts in ohlcv.index):
+        return ohlcv
+    ts = pd.Timestamp(today)
+    if ohlcv.index.tz is not None:
+        ts = ts.tz_localize(ohlcv.index.tz)
+    row = pd.Series({
+        "Open": ama_info["today_open"],
+        "High": ama_info["today_high"],
+        "Low": ama_info["today_low"],
+        "Close": ama_info["today_last"],
+        "Volume": float(ama_info["volume"]),
+    }, name=ts)
+    return pd.concat([ohlcv, row.to_frame().T.reindex(columns=ohlcv.columns)])
+
+
 def check_uwabanaare_aka2(ohlcv, today_open, today_last):
-    """前日がギャップアップ陰線、かつ今日前場も陰線進行中なら True"""
+    """上放れ赤2本: 前日ギャップアップ陽線 + 今日前場も陽線"""
     today_date = datetime.now(JST).date()
     idx_dates = [ts.date() for ts in ohlcv.index]
     complete = ohlcv[[d < today_date for d in idx_dates]]
@@ -174,6 +193,39 @@ def check_uwabanaare_aka2(ohlcv, today_open, today_last):
     return gap_up and yesterday_bullish and today_bullish
 
 
+def check_uwabanaare_narabiari(ohlcv, today_open, today_last):
+    """上放れ並び赤: 前日ギャップアップ陽線 + 今日も陽線かつ前日と同じ水準・同じ大きさ"""
+    today_date = datetime.now(JST).date()
+    idx_dates = [ts.date() for ts in ohlcv.index]
+    complete = ohlcv[[d < today_date for d in idx_dates]]
+    if len(complete) < 2:
+        return False
+    day_before = complete.iloc[-2]
+    yesterday = complete.iloc[-1]
+
+    gap_up = float(yesterday["Open"]) > float(day_before["High"])
+    yesterday_bullish = float(yesterday["Close"]) > float(yesterday["Open"])
+    today_bullish = today_last > today_open
+
+    if not (gap_up and yesterday_bullish and today_bullish):
+        return False
+
+    # 今日の実体が昨日の実体と同じ大きさ（70〜130%）
+    yesterday_body = abs(float(yesterday["Close"]) - float(yesterday["Open"]))
+    today_body = abs(today_last - today_open)
+    if yesterday_body == 0:
+        return False
+    body_ratio = today_body / yesterday_body
+    if not (0.7 <= body_ratio <= 1.3):
+        return False
+
+    # 今日の始値が昨日の始値水準（±1%以内）
+    if today_open < float(yesterday["Open"]) * 0.99:
+        return False
+
+    return True
+
+
 def screen(tickers_df):
     name_map = dict(zip(tickers_df["ticker"], tickers_df["銘柄名"]))
     market_map = dict(zip(tickers_df["ticker"], tickers_df["市場・商品区分"]))
@@ -185,6 +237,7 @@ def screen(tickers_df):
 
     results = []
     pattern_results = []
+    narabiari_results = []
     chart_data = {}
     for t in valid_tickers:
         if t not in ama_data:
@@ -194,10 +247,11 @@ def screen(tickers_df):
         avg_vol = avg_data[t]["avg_vol"]
         ratio = ama_vol / avg_vol
         ohlcv = avg_data[t]["ohlcv"]
-        is_pattern = check_uwabanaare_aka2(ohlcv, ama_info["today_open"], ama_info["today_last"])
+        is_aka2 = check_uwabanaare_aka2(ohlcv, ama_info["today_open"], ama_info["today_last"])
+        is_narabiari = check_uwabanaare_narabiari(ohlcv, ama_info["today_open"], ama_info["today_last"])
 
         if ratio >= RATIO_THRESHOLD:
-            chart_data[t] = ohlcv
+            chart_data[t] = _append_today_candle(ohlcv, ama_info)
             results.append({
                 "コード": t.replace(".T", ""),
                 "銘柄名": name_map.get(t, ""),
@@ -206,13 +260,14 @@ def screen(tickers_df):
                 "前場出来高": ama_vol,
                 "7日平均出来高": int(avg_vol),
                 "出来高倍率": round(float(ratio), 2),
-                "上離れ赤2本": is_pattern,
+                "上離れ赤2本": is_aka2,
+                "上放れ並び赤": is_narabiari,
                 "日付": datetime.now(JST).date(),
             })
 
-        if is_pattern:
+        if is_aka2:
             if t not in chart_data:
-                chart_data[t] = ohlcv
+                chart_data[t] = _append_today_candle(ohlcv, ama_info)
             pattern_results.append({
                 "コード": t.replace(".T", ""),
                 "銘柄名": name_map.get(t, ""),
@@ -220,7 +275,17 @@ def screen(tickers_df):
                 "日付": datetime.now(JST).date(),
             })
 
-    return pd.DataFrame(results), pd.DataFrame(pattern_results), chart_data
+        if is_narabiari:
+            if t not in chart_data:
+                chart_data[t] = _append_today_candle(ohlcv, ama_info)
+            narabiari_results.append({
+                "コード": t.replace(".T", ""),
+                "銘柄名": name_map.get(t, ""),
+                "出来高倍率": round(float(ratio), 2),
+                "日付": datetime.now(JST).date(),
+            })
+
+    return pd.DataFrame(results), pd.DataFrame(pattern_results), pd.DataFrame(narabiari_results), chart_data
 
 
 KABUTAN_HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"}
@@ -299,7 +364,12 @@ def build_mail(result, data_date, sender, mail_to, charts=None, disclosures_map=
         code = r['コード']
         url = f"https://finance.yahoo.co.jp/quote/{code}.T"
         cid = f"chart_{code}"
-        pattern_mark = "★" if r.get("上離れ赤2本") else ""
+        marks = []
+        if r.get("上離れ赤2本"):
+            marks.append("★")
+        if r.get("上放れ並び赤"):
+            marks.append("◆")
+        pattern_mark = " ".join(marks)
         rows.append(
             f"<tr>"
             f"<td><a href='{url}'>{code} {r['銘柄名']}</a> {pattern_mark}</td>"
@@ -318,7 +388,7 @@ def build_mail(result, data_date, sender, mail_to, charts=None, disclosures_map=
     html = f"""<html><body>
 <p>{data_date} 前場出来高急増銘柄（7日平均全日出来高超え）</p>
 <table border='1' cellpadding='4' cellspacing='0'>
-<tr><th>銘柄（★=上離れ赤2本）</th><th>倍率</th></tr>
+<tr><th>銘柄（★=上離れ赤2本 ◆=上放れ並び赤）</th><th>倍率</th></tr>
 {"".join(rows)}
 </table>
 <p>詳細は添付CSVをご覧ください。</p>
@@ -389,6 +459,52 @@ def build_pattern_mail(pattern_result, data_date, sender, mail_to, charts=None):
     return msg
 
 
+def build_narabiari_pattern_mail(narabiari_result, data_date, sender, mail_to, charts=None):
+    msg = MIMEMultipart()
+    msg["From"] = sender
+    msg["To"] = mail_to
+    msg["Subject"] = f"[上放れ並び赤] {data_date} 該当 {len(narabiari_result)} 銘柄"
+
+    rows = []
+    for _, r in narabiari_result.iterrows():
+        code = r["コード"]
+        url = f"https://finance.yahoo.co.jp/quote/{code}.T"
+        cid = f"chart_{code}"
+        rows.append(
+            f"<tr>"
+            f"<td><a href='{url}'>{code} {r['銘柄名']}</a></td>"
+            f"<td style='text-align:right'>{r['出来高倍率']}倍</td>"
+            f"</tr>"
+        )
+        if charts and (code + ".T") in charts and charts[code + ".T"]:
+            rows.append(
+                f"<tr><td colspan='2'><img src='cid:{cid}' style='max-width:100%'></td></tr>"
+            )
+
+    html = f"""<html><body>
+<p>{data_date} 前場時点で上放れ並び赤パターン検出銘柄（平均売買代金5億円/日以上）</p>
+<p>上放れ並び赤: ギャップアップ後、前日と同水準・同実体サイズの陽線が続く強い上昇シグナル</p>
+<table border='1' cellpadding='4' cellspacing='0'>
+<tr><th>銘柄</th><th>前場出来高倍率</th></tr>
+{"".join(rows)}
+</table>
+</body></html>"""
+
+    related = MIMEMultipart("related")
+    related.attach(MIMEText(html, "html", "utf-8"))
+    if charts:
+        for ticker, img_bytes in charts.items():
+            code = ticker.replace(".T", "")
+            if img_bytes and any(r["コード"] == code for _, r in narabiari_result.iterrows()):
+                img_part = MIMEImage(img_bytes)
+                img_part.add_header("Content-ID", f"<chart_{code}>")
+                img_part.add_header("Content-Disposition", "inline", filename=f"{code}.png")
+                related.attach(img_part)
+    msg.attach(related)
+
+    return msg
+
+
 def send_mail(msg, sender, app_password):
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
         server.login(sender, app_password)
@@ -410,7 +526,7 @@ def main():
         print("GMAIL_ADDRESS / GMAIL_APP_PASSWORD が未設定のため、メール送信をスキップします。")
 
     tickers_df = get_ticker_list()
-    result, pattern_result, chart_data = screen(tickers_df)
+    result, pattern_result, narabiari_result, chart_data = screen(tickers_df)
 
     today_jst = datetime.now(JST).date()
     name_map = dict(zip(tickers_df["ticker"], tickers_df["銘柄名"]))
@@ -420,8 +536,8 @@ def main():
     all_codes = set()
     if not result.empty:
         all_codes.update(result["コード"].tolist())
-    if not pattern_result.empty:
-        all_codes.update(pattern_result["コード"].tolist())
+    if not narabiari_result.empty:
+        all_codes.update(narabiari_result["コード"].tolist())
     for code in all_codes:
         t = code + ".T"
         if t in chart_data:
@@ -454,8 +570,15 @@ def main():
         print(f"上離れ赤2本 該当 {len(pattern_result)} 銘柄")
         print(pattern_result.to_string(index=False))
 
+    if narabiari_result.empty:
+        print("上放れ並び赤：該当銘柄なし。")
+    else:
+        narabiari_result = narabiari_result.sort_values("出来高倍率", ascending=False).reset_index(drop=True)
+        print(f"上放れ並び赤 該当 {len(narabiari_result)} 銘柄")
+        print(narabiari_result.to_string(index=False))
+
         if mail_enabled:
-            msg = build_pattern_mail(pattern_result, today_jst, sender, mail_to, charts)
+            msg = build_narabiari_pattern_mail(narabiari_result, today_jst, sender, mail_to, charts)
             send_mail(msg, sender, app_password)
 
 
