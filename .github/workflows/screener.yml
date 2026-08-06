@@ -1,10 +1,7 @@
 name: Volume Spike Screener
 
 on:
-  schedule:
-    # 平日 17:00 JST (= 08:00 UTC)。大引け後にYahooへデータが反映された頃に実行
-    - cron: "0 8 * * 1-5"
-  workflow_dispatch: {}  # 手動実行(テスト用)
+  workflow_dispatch: {}
 
 jobs:
   screen:
