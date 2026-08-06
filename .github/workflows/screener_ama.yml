@@ -1,9 +1,6 @@
 name: Volume Spike Screener (前場)
 
 on:
-  schedule:
-    # 平日 11:45 JST (= 02:45 UTC)。前場引け後に実行
-    - cron: "45 2 * * 1-5"
   workflow_dispatch: {}
 
 jobs:
