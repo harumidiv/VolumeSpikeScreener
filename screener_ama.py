@@ -30,7 +30,7 @@ import tempfile
 import jpholiday
 
 # ================= 設定 =================
-RATIO_THRESHOLD = 1.0          # 前場出来高 ÷ 7日平均全日出来高のしきい値
+RATIO_THRESHOLD = 1.5          # 前場出来高 ÷ 7日平均全日出来高のしきい値
 AVG_DAYS = 7                   # 平均をとる過去営業日数
 MIN_AVG_VOLUME = 10_000        # 平均出来高(株数)の下限
 MIN_AVG_VALUE = 500_000_000    # 平均売買代金の下限(円)。5億円/日
@@ -219,8 +219,14 @@ def check_uwabanaare_narabiari(ohlcv, today_open, today_last):
     if not (0.7 <= body_ratio <= 1.3):
         return False
 
-    # 今日の始値が昨日の始値水準（±1%以内）
-    if today_open < float(yesterday["Open"]) * 0.99:
+    # 今日の始値が昨日の始値水準（±3%以内）に横並び
+    yesterday_open = float(yesterday["Open"])
+    if not (yesterday_open * 0.97 <= today_open <= yesterday_open * 1.03):
+        return False
+
+    # 今日の終値が昨日の終値水準（±3%以内）に横並び
+    yesterday_close = float(yesterday["Close"])
+    if not (yesterday_close * 0.97 <= today_last <= yesterday_close * 1.03):
         return False
 
     return True
@@ -353,7 +359,7 @@ def build_mail(result, data_date, sender, mail_to, charts=None, disclosures_map=
 
     if result.empty:
         msg["Subject"] = f"[前場スクリーナー] {data_date} 該当なし"
-        body = f"{data_date} の前場で、出来高が7日平均を超えた銘柄はありませんでした。"
+        body = f"{data_date} の前場で、出来高が7日平均の{RATIO_THRESHOLD}倍を超えた銘柄はありませんでした。"
         msg.attach(MIMEText(body, "plain", "utf-8"))
         return msg
 
@@ -386,7 +392,7 @@ def build_mail(result, data_date, sender, mail_to, charts=None, disclosures_map=
             rows.append(f"<tr><td colspan='2' style='font-size:0.9em'>📋 開示: {links}</td></tr>")
 
     html = f"""<html><body>
-<p>{data_date} 前場出来高急増銘柄（7日平均全日出来高超え）</p>
+<p>{data_date} 前場出来高急増銘柄（7日平均の{RATIO_THRESHOLD}倍超え）</p>
 <table border='1' cellpadding='4' cellspacing='0'>
 <tr><th>銘柄（★=上離れ赤2本 ◆=上放れ並び赤）</th><th>倍率</th></tr>
 {"".join(rows)}
