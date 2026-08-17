@@ -9,6 +9,7 @@
     MAIL_TO            通知先メールアドレス(省略時はGMAIL_ADDRESSと同じ)
 """
 
+import base64
 import io
 import os
 import re
@@ -39,6 +40,7 @@ BATCH_SIZE = 200               # yfinanceの一括ダウンロード単位
 EXCLUDE_SMALL_CAP = True       # 小型株を除外
 AMA_START = "09:00"
 AMA_END = "11:30"
+PAGES_BASE_URL = "https://harumidiv.github.io/VolumeSpikeScreener"
 # ========================================
 
 JPX_LIST_URL = "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls"
@@ -392,6 +394,7 @@ def build_mail(result, data_date, sender, mail_to, charts=None, disclosures_map=
             rows.append(f"<tr><td colspan='2' style='font-size:0.9em'>📋 開示: {links}</td></tr>")
 
     html = f"""<html><body>
+<p><a href="{PAGES_BASE_URL}/ama.html">Webで確認する →</a></p>
 <p>{data_date} 前場出来高急増銘柄（7日平均の{RATIO_THRESHOLD}倍超え）</p>
 <table border='1' cellpadding='4' cellspacing='0'>
 <tr><th>銘柄（★=上離れ赤2本 ◆=上放れ並び赤）</th><th>倍率</th></tr>
@@ -443,6 +446,7 @@ def build_pattern_mail(pattern_result, data_date, sender, mail_to, charts=None):
             )
 
     html = f"""<html><body>
+<p><a href="{PAGES_BASE_URL}/ama.html">Webで確認する →</a></p>
 <p>{data_date} 前場時点で上離れ赤2本パターン検出銘柄（平均売買代金10億円/日以上）</p>
 <table border='1' cellpadding='4' cellspacing='0'>
 <tr><th>銘柄</th><th>前場出来高倍率</th></tr>
@@ -488,6 +492,7 @@ def build_narabiari_pattern_mail(narabiari_result, data_date, sender, mail_to, c
             )
 
     html = f"""<html><body>
+<p><a href="{PAGES_BASE_URL}/ama.html">Webで確認する →</a></p>
 <p>{data_date} 前場時点で上放れ並び赤パターン検出銘柄（平均売買代金10億円/日以上）</p>
 <p>上放れ並び赤: ギャップアップ後、前日と同水準・同実体サイズの陽線が続く強い上昇シグナル</p>
 <table border='1' cellpadding='4' cellspacing='0'>
@@ -516,6 +521,117 @@ def send_mail(msg, sender, app_password):
         server.login(sender, app_password)
         server.send_message(msg)
     print(f"メール送信完了 → {msg['To']}")
+
+
+def _write_index_html(data_date: str):
+    html = f"""<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>スクリーナー {data_date}</title>
+<style>
+* {{ box-sizing: border-box; margin: 0; padding: 0; }}
+body {{ font-family: sans-serif; }}
+.header {{ background: #1a1a2e; color: #fff; padding: 12px 16px; font-size: 16px; font-weight: bold; }}
+.tabs {{ display: flex; background: #16213e; }}
+.tab-btn {{ flex: 1; padding: 12px; color: #aaa; background: none; border: none; cursor: pointer; font-size: 14px; border-bottom: 3px solid transparent; }}
+.tab-btn.active {{ color: #fff; border-bottom-color: #4a90d9; background: #0f3460; }}
+#content {{ padding: 0; min-height: 60vh; }}
+</style>
+</head>
+<body>
+<div class="header">スクリーナー結果 {data_date}</div>
+<div class="tabs">
+  <button class="tab-btn active" id="tab-ama" onclick="loadPage('ama.html', 'tab-ama')">前場</button>
+  <button class="tab-btn" id="tab-eod" onclick="loadPage('eod.html', 'tab-eod')">引け後</button>
+</div>
+<div id="content"><p style="padding:16px">読み込み中...</p></div>
+<script>
+function loadPage(url, tabId) {{
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById(tabId).classList.add('active');
+  fetch(url)
+    .then(r => r.ok ? r.text() : null)
+    .then(html => {{
+      if (!html) {{ document.getElementById('content').innerHTML = '<p style="padding:16px;color:#888">まだデータがありません。</p>'; return; }}
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+      document.getElementById('content').innerHTML = '<div style="padding:16px">' + doc.body.innerHTML + '</div>';
+    }})
+    .catch(() => {{ document.getElementById('content').innerHTML = '<p style="padding:16px;color:#888">読み込みに失敗しました。</p>'; }});
+}}
+loadPage('ama.html', 'tab-ama');
+</script>
+</body>
+</html>"""
+    os.makedirs("output", exist_ok=True)
+    with open("output/index.html", "w", encoding="utf-8") as f:
+        f.write(html)
+
+
+def build_html_page(result, pattern_result, narabiari_result, data_date, charts):
+    def make_rows(df):
+        rows = []
+        for _, r in df.iterrows():
+            code = r["コード"]
+            url = f"https://finance.yahoo.co.jp/quote/{code}.T"
+            rows.append(
+                f"<tr>"
+                f"<td><a href='{url}'>{code} {r['銘柄名']}</a></td>"
+                f"<td style='text-align:right'>{r['出来高倍率']}倍</td>"
+                f"</tr>"
+            )
+            if charts and (code + ".T") in charts and charts[code + ".T"]:
+                img_b64 = base64.b64encode(charts[code + ".T"]).decode('ascii')
+                rows.append(
+                    f"<tr><td colspan='2'><img src='data:image/png;base64,{img_b64}' style='max-width:100%'></td></tr>"
+                )
+        return "".join(rows)
+
+    sections = []
+    if not result.empty:
+        sections.append(f"""<h2>出来高急増銘柄（前場） {data_date}</h2>
+<p>前場出来高が7日平均の{RATIO_THRESHOLD}倍以上、平均売買代金{MIN_AVG_VALUE // 100_000_000}億円/日以上</p>
+<table><tr><th>銘柄</th><th>倍率</th></tr>{make_rows(result)}</table>""")
+
+    if not pattern_result.empty:
+        sections.append(f"""<h2>上離れ赤2本パターン {data_date}</h2>
+<table><tr><th>銘柄</th><th>倍率</th></tr>{make_rows(pattern_result)}</table>""")
+
+    if not narabiari_result.empty:
+        sections.append(f"""<h2>上放れ並び赤パターン {data_date}</h2>
+<p>ギャップアップ後、前日と同水準・同実体サイズの陽線が続く強い上昇シグナル</p>
+<table><tr><th>銘柄</th><th>倍率</th></tr>{make_rows(narabiari_result)}</table>""")
+
+    body_content = "\n".join(sections) if sections else "<p>該当銘柄はありませんでした。</p>"
+
+    html = f"""<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>前場スクリーナー {data_date}</title>
+<style>
+body {{ font-family: sans-serif; max-width: 960px; margin: 0 auto; }}
+h2 {{ font-size: 16px; margin: 16px 0 6px; }}
+p {{ font-size: 13px; color: #555; margin-bottom: 12px; }}
+table {{ border-collapse: collapse; width: 100%; font-size: 13px; margin-bottom: 24px; }}
+th, td {{ border: 1px solid #ddd; padding: 6px 10px; }}
+th {{ background: #f5f5f5; text-align: left; }}
+img {{ max-width: 100%; }}
+a {{ color: #0066cc; text-decoration: none; }}
+</style>
+</head>
+<body>
+{body_content}
+</body>
+</html>"""
+
+    os.makedirs("output", exist_ok=True)
+    with open("output/ama.html", "w", encoding="utf-8") as f:
+        f.write(html)
+    _write_index_html(str(data_date))
+    print("output/ama.html を保存しました")
 
 
 def main():
@@ -548,6 +664,9 @@ def main():
         t = code + ".T"
         if t in chart_data:
             charts[t] = generate_chart(t, name_map.get(t, ""), chart_data[t])
+
+    if mail_enabled:
+        build_html_page(result, pattern_result, narabiari_result, today_jst, charts)
 
     if result.empty:
         print("出来高急増：該当銘柄なし。")
