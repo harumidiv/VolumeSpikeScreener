@@ -33,7 +33,7 @@ import jpholiday
 RATIO_THRESHOLD = 2.0          # 出来高倍率のしきい値(2倍以上)
 AVG_DAYS = 7                   # 平均をとる過去営業日数
 MIN_AVG_VOLUME = 10_000        # 平均出来高(株数)の下限
-MIN_AVG_VALUE = 500_000_000    # 平均売買代金の下限(円)。5億円/日
+MIN_AVG_VALUE = 1_000_000_000  # 平均売買代金の下限(円)。10億円/日
 EXCLUDE_ZERO_VOL_DAYS = True   # 過去7日に出来高ゼロの日がある銘柄を除外
 BATCH_SIZE = 200               # yfinanceの一括ダウンロード単位
 SKIP_IF_STALE = True           # 最新データが当日でない(=休場日)ならメールを送らず終了
