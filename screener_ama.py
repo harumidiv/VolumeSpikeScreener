@@ -443,7 +443,7 @@ def build_pattern_mail(pattern_result, data_date, sender, mail_to, charts=None):
             )
 
     html = f"""<html><body>
-<p>{data_date} 前場時点で上離れ赤2本パターン検出銘柄（平均売買代金5億円/日以上）</p>
+<p>{data_date} 前場時点で上離れ赤2本パターン検出銘柄（平均売買代金10億円/日以上）</p>
 <table border='1' cellpadding='4' cellspacing='0'>
 <tr><th>銘柄</th><th>前場出来高倍率</th></tr>
 {"".join(rows)}
@@ -488,7 +488,7 @@ def build_narabiari_pattern_mail(narabiari_result, data_date, sender, mail_to, c
             )
 
     html = f"""<html><body>
-<p>{data_date} 前場時点で上放れ並び赤パターン検出銘柄（平均売買代金5億円/日以上）</p>
+<p>{data_date} 前場時点で上放れ並び赤パターン検出銘柄（平均売買代金10億円/日以上）</p>
 <p>上放れ並び赤: ギャップアップ後、前日と同水準・同実体サイズの陽線が続く強い上昇シグナル</p>
 <table border='1' cellpadding='4' cellspacing='0'>
 <tr><th>銘柄</th><th>前場出来高倍率</th></tr>
