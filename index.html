@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>スクリーナー 2026-08-18</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: sans-serif; }
+.header { background: #1a1a2e; color: #fff; padding: 12px 16px; font-size: 16px; font-weight: bold; }
+.tabs { display: flex; background: #16213e; }
+.tab-btn { flex: 1; padding: 12px; color: #aaa; background: none; border: none; cursor: pointer; font-size: 14px; border-bottom: 3px solid transparent; }
+.tab-btn.active { color: #fff; border-bottom-color: #4a90d9; background: #0f3460; }
+#content { padding: 0; min-height: 60vh; }
+</style>
+</head>
+<body>
+<div class="header">スクリーナー結果 2026-08-18</div>
+<div class="tabs">
+  <button class="tab-btn active" id="tab-ama" onclick="loadPage('ama.html', 'tab-ama')">前場</button>
+  <button class="tab-btn" id="tab-eod" onclick="loadPage('eod.html', 'tab-eod')">引け後</button>
+</div>
+<div id="content"><p style="padding:16px">読み込み中...</p></div>
+<script>
+function loadPage(url, tabId) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById(tabId).classList.add('active');
+  fetch(url)
+    .then(r => r.ok ? r.text() : null)
+    .then(html => {
+      if (!html) { document.getElementById('content').innerHTML = '<p style="padding:16px;color:#888">まだデータがありません。</p>'; return; }
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+      document.getElementById('content').innerHTML = '<div style="padding:16px">' + doc.body.innerHTML + '</div>';
+    })
+    .catch(() => { document.getElementById('content').innerHTML = '<p style="padding:16px;color:#888">読み込みに失敗しました。</p>'; });
+}
+loadPage('ama.html', 'tab-ama');
+</script>
+</body>
+</html>
