@@ -40,6 +40,8 @@ BATCH_SIZE = 200               # yfinanceの一括ダウンロード単位
 EXCLUDE_SMALL_CAP = True       # 小型株を除外
 AMA_START = "09:00"
 AMA_END = "11:30"
+NARABI_BODY_SIZE_RATIO_MIN = 0.8       # 並び赤2本の短い実体 ÷ 長い実体
+NARABI_BODY_ALIGNMENT_RATIO = 0.2      # 始値・終値のずれの許容値（短い実体に対する比率）
 PAGES_BASE_URL = "https://harumidiv.github.io/VolumeSpikeScreener"
 # ========================================
 
@@ -196,7 +198,7 @@ def check_uwabanaare_aka2(ohlcv, today_open, today_last):
 
 
 def check_uwabanaare_narabiari(ohlcv, today_open, today_last):
-    """上放れ並び赤: 前日ギャップアップ陽線 + 今日も陽線かつ前日と同じ水準・同じ大きさ"""
+    """上放れ並び赤: 窓を開けた陽線と、実体が横並びの陽線。"""
     today_date = datetime.now(JST).date()
     idx_dates = [ts.date() for ts in ohlcv.index]
     complete = ohlcv[[d < today_date for d in idx_dates]]
@@ -205,30 +207,39 @@ def check_uwabanaare_narabiari(ohlcv, today_open, today_last):
     day_before = complete.iloc[-2]
     yesterday = complete.iloc[-1]
 
-    gap_up = float(yesterday["Open"]) > float(day_before["High"])
-    yesterday_bullish = float(yesterday["Close"]) > float(yesterday["Open"])
+    day_before_high = float(day_before["High"])
+    yesterday_open = float(yesterday["Open"])
+    yesterday_close = float(yesterday["Close"])
+    yesterday_low = float(yesterday["Low"])
+
+    # 始値だけでなく前日の安値が前々日の高値より上にあることを要求し、
+    # ヒゲを含むローソク足同士に実際の窓が開いていることを確認する。
+    gap_up = yesterday_low > day_before_high
+    yesterday_bullish = yesterday_close > yesterday_open
     today_bullish = today_last > today_open
 
     if not (gap_up and yesterday_bullish and today_bullish):
         return False
 
-    # 今日の実体が昨日の実体と同じ大きさ（70〜130%）
-    yesterday_body = abs(float(yesterday["Close"]) - float(yesterday["Open"]))
-    today_body = abs(today_last - today_open)
-    if yesterday_body == 0:
-        return False
-    body_ratio = today_body / yesterday_body
-    if not (0.7 <= body_ratio <= 1.3):
+    # 2本目の実体も窓より上に残っていることを確認する。
+    if today_open <= day_before_high:
         return False
 
-    # 今日の始値が昨日の始値水準（±3%以内）に横並び
-    yesterday_open = float(yesterday["Open"])
-    if not (yesterday_open * 0.97 <= today_open <= yesterday_open * 1.03):
+    yesterday_body = yesterday_close - yesterday_open
+    today_body = today_last - today_open
+    shorter_body = min(yesterday_body, today_body)
+    longer_body = max(yesterday_body, today_body)
+
+    # 実体の長さが近い2本だけを対象にする。
+    if shorter_body / longer_body < NARABI_BODY_SIZE_RATIO_MIN:
         return False
 
-    # 今日の終値が昨日の終値水準（±3%以内）に横並び
-    yesterday_close = float(yesterday["Close"])
-    if not (yesterday_close * 0.97 <= today_last <= yesterday_close * 1.03):
+    # 株価に対する±3%ではなく、実体の長さを基準に上下端のずれを測る。
+    # これにより、実体が小さい銘柄で大きくずれた2本が候補になるのを防ぐ。
+    alignment_tolerance = shorter_body * NARABI_BODY_ALIGNMENT_RATIO
+    if abs(today_open - yesterday_open) > alignment_tolerance:
+        return False
+    if abs(today_last - yesterday_close) > alignment_tolerance:
         return False
 
     return True
