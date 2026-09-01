@@ -7,3 +7,5 @@ mplfinance
 japanize-matplotlib
 setuptools
 jpholiday
+gspread
+google-auth

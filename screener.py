@@ -1,11 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-日本株 出来高急増スクリーナー(GitHub Actions + Gmail通知版)
-直近営業日の出来高が、その前7営業日の平均出来高の2倍以上の銘柄を抽出してメール送信する。
+日本株 出来高急増スクリーナー(GitHub Actions + スプレッドシート記録版)
+直近営業日の出来高が、その前7営業日の平均出来高の2倍以上の銘柄を抽出し、
+GitHub Pagesに掲載しつつGoogleスプレッドシートへ追記する。
+あわせて、過去に検出した銘柄の1ヶ月後の株価をシートに埋めていく。
 
 必要な環境変数(GitHub Secretsに設定):
-    GMAIL_ADDRESS      送信元Gmailアドレス
-    GMAIL_APP_PASSWORD Gmailのアプリパスワード(16桁)
+    GOOGLE_SERVICE_ACCOUNT_JSON  サービスアカウントの認証情報JSON
+    SPREADSHEET_ID               書き込み先スプレッドシートのID
 """
 
 import base64
@@ -14,21 +16,17 @@ import os
 import re
 import sys
 import time
-import smtplib
 import requests
 import pandas as pd
 import yfinance as yf
 from datetime import date, datetime, timezone, timedelta
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from email.mime.application import MIMEApplication
-from email.mime.image import MIMEImage
 import matplotlib
 matplotlib.use('Agg')
 import japanize_matplotlib  # noqa: F401
 import mplfinance as mpf
 import tempfile
 import jpholiday
+import sheets
 
 # ================= 設定 =================
 RATIO_THRESHOLD = 2.0          # 出来高倍率のしきい値(2倍以上)
@@ -37,8 +35,7 @@ MIN_AVG_VOLUME = 10_000        # 平均出来高(株数)の下限
 MIN_AVG_VALUE = 1_000_000_000  # 平均売買代金の下限(円)。10億円/日
 EXCLUDE_ZERO_VOL_DAYS = True   # 過去7日に出来高ゼロの日がある銘柄を除外
 BATCH_SIZE = 200               # yfinanceの一括ダウンロード単位
-SKIP_IF_STALE = True           # 最新データが当日でない(=休場日)ならメールを送らず終了
-MAIL_TO = os.environ.get("MAIL_TO", "")
+SKIP_IF_STALE = True           # 最新データが当日でない(=休場日)なら記録せず終了
 MARKETS = ["プライム（内国株式）", "スタンダード（内国株式）", "グロース（内国株式）"]
 # 全市場対象にするなら MARKETS = None
 PAGES_BASE_URL = "https://harumidiv.github.io/VolumeSpikeScreener"
@@ -195,80 +192,6 @@ def generate_chart(ticker, name, df):
                 pass
 
 
-def build_mail(result: pd.DataFrame, data_date, sender: str, charts=None, disclosures_map=None):
-    msg = MIMEMultipart()
-    msg["From"] = sender
-    msg["To"] = MAIL_TO
-
-    if result.empty:
-        msg["Subject"] = f"[出来高スクリーナー] {data_date} 該当なし"
-        body = f"{data_date} の取引で、出来高が7日平均の{RATIO_THRESHOLD}倍以上となった銘柄はありませんでした。\n(フィルタ: 平均売買代金{MIN_AVG_VALUE // 100_000_000}億円/日以上)"
-        msg.attach(MIMEText(body, "plain", "utf-8"))
-        return msg
-
-    msg["Subject"] = f"[出来高スクリーナー] {data_date} 該当 {len(result)} 銘柄"
-
-    rows = []
-    for _, r in result.iterrows():
-        code = r['コード']
-        chg = f"{r['前日比%']:+.2f}%" if pd.notna(r["前日比%"]) else "-"
-        url = f"https://finance.yahoo.co.jp/quote/{code}.T"
-        cid = f"chart_{code}"
-        rows.append(
-            f"<tr>"
-            f"<td><a href='{url}'>{code} {r['銘柄名']}</a></td>"
-            f"<td style='text-align:right'>{r['終値']:,}円</td>"
-            f"<td style='text-align:right'>{chg}</td>"
-            f"<td style='text-align:right'>{r['出来高倍率']}倍</td>"
-            f"<td style='text-align:right'>{r['当日出来高']:,}</td>"
-            f"</tr>"
-        )
-        if charts and (code + ".T") in charts and charts[code + ".T"]:
-            rows.append(
-                f"<tr><td colspan='5'><img src='cid:{cid}' style='max-width:100%'></td></tr>"
-            )
-        discs = disclosures_map.get(code, []) if disclosures_map else []
-        if discs:
-            links = "　".join(f"<a href='{u}'>{t}</a>" for t, u in discs)
-            rows.append(f"<tr><td colspan='5' style='font-size:0.9em'>📋 開示: {links}</td></tr>")
-
-    html = f"""<html><body>
-<p><a href="{PAGES_BASE_URL}/eod.html">Webで確認する →</a></p>
-<p>{data_date} 出来高急増銘柄（7日平均の{RATIO_THRESHOLD}倍以上、平均売買代金{MIN_AVG_VALUE // 100_000_000}億円/日以上）</p>
-<table border='1' cellpadding='4' cellspacing='0'>
-<tr><th>銘柄</th><th>終値</th><th>前日比</th><th>倍率</th><th>当日出来高</th></tr>
-{"".join(rows)}
-</table>
-<p>詳細は添付CSVをご覧ください。</p>
-</body></html>"""
-
-    related = MIMEMultipart("related")
-    related.attach(MIMEText(html, "html", "utf-8"))
-    if charts:
-        for ticker, img_bytes in charts.items():
-            if img_bytes:
-                code = ticker.replace(".T", "")
-                img_part = MIMEImage(img_bytes)
-                img_part.add_header("Content-ID", f"<chart_{code}>")
-                img_part.add_header("Content-Disposition", "inline", filename=f"{code}.png")
-                related.attach(img_part)
-    msg.attach(related)
-
-    csv_bytes = result.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
-    part = MIMEApplication(csv_bytes, Name=f"volume_spike_{data_date}.csv")
-    part["Content-Disposition"] = f'attachment; filename="volume_spike_{data_date}.csv"'
-    msg.attach(part)
-
-    return msg
-
-
-def send_mail(msg, sender, app_password):
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-        server.login(sender, app_password)
-        server.send_message(msg)
-    print(f"メール送信完了 → {MAIL_TO}")
-
-
 def _write_index_html(data_date: str):
     html = f"""<!DOCTYPE html>
 <html lang="ja">
@@ -380,51 +303,46 @@ def main():
         print(f"{today} は土日または祝日のため処理をスキップします。")
         return
 
-    sender = os.environ.get("GMAIL_ADDRESS")
-    app_password = os.environ.get("GMAIL_APP_PASSWORD")
-    mail_enabled = bool(sender and app_password)
-    if not mail_enabled:
-        print("GMAIL_ADDRESS / GMAIL_APP_PASSWORD が未設定のため、メール送信をスキップします。")
-
     tickers_df = get_ticker_list()
     result, latest_date, chart_data = screen(tickers_df)
 
     today_jst = datetime.now(JST).date()
     if SKIP_IF_STALE and latest_date and latest_date < today_jst:
-        print(f"最新データ日付 {latest_date} が本日 {today_jst} より古いため休場日と判断し、メールは送信しません。")
+        print(f"最新データ日付 {latest_date} が本日 {today_jst} より古いため休場日と判断し、記録しません。")
         return
+
+    data_date = latest_date or today_jst
 
     if result.empty:
-        print("該当銘柄なし。メールは送信しません。")
-        return
+        print("該当銘柄なし。")
+    else:
+        result = result.sort_values("出来高倍率", ascending=False).reset_index(drop=True)
+        print(result.to_string(index=False))
 
-    result = result.sort_values("出来高倍率", ascending=False).reset_index(drop=True)
-    print(result.to_string(index=False))
+        name_map = dict(zip(tickers_df["ticker"], tickers_df["銘柄名"]))
+        charts = {}
+        for _, row in result.iterrows():
+            t = row["コード"] + ".T"
+            if t in chart_data:
+                charts[t] = generate_chart(t, name_map.get(t, ""), chart_data[t])
 
-    if not mail_enabled:
-        return
+        print("開示情報を取得中...")
+        disclosures_map = {}
+        for _, row in result.iterrows():
+            code = row["コード"]
+            discs = get_kabutan_disclosures(code, data_date)
+            if discs:
+                disclosures_map[code] = discs
+                print(f"  {code}: {len(discs)}件")
+            time.sleep(0.3)
 
-    name_map = dict(zip(tickers_df["ticker"], tickers_df["銘柄名"]))
-    charts = {}
-    for _, row in result.iterrows():
-        t = row["コード"] + ".T"
-        if t in chart_data:
-            charts[t] = generate_chart(t, name_map.get(t, ""), chart_data[t])
+        build_html_page(result, data_date, charts, disclosures_map)
+        sheets.append_detections(
+            sheets.build_records(result, "引け後急増", price_col="終値")
+        )
 
-    print("開示情報を取得中...")
-    data_date = latest_date or today_jst
-    disclosures_map = {}
-    for _, row in result.iterrows():
-        code = row["コード"]
-        discs = get_kabutan_disclosures(code, data_date)
-        if discs:
-            disclosures_map[code] = discs
-            print(f"  {code}: {len(discs)}件")
-        time.sleep(0.3)
-
-    build_html_page(result, data_date, charts, disclosures_map)
-    msg = build_mail(result, data_date, sender, charts, disclosures_map)
-    send_mail(msg, sender, app_password)
+    # 過去に検出した銘柄の1ヶ月後の株価を埋める
+    sheets.fill_followups()
 
 
 if __name__ == "__main__":

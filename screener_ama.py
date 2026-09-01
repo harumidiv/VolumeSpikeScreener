@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-日本株 前場出来高急増スクリーナー(GitHub Actions + Gmail通知版)
-前場(9:00-11:30)の出来高が過去7営業日の平均全日出来高を上回った銘柄を抽出してメール送信する。
+日本株 前場出来高急増スクリーナー(GitHub Actions + スプレッドシート記録版)
+前場(9:00-11:30)の出来高が過去7営業日の平均全日出来高を上回った銘柄を抽出し、
+GitHub Pagesに掲載しつつGoogleスプレッドシートへ追記する。
 
 必要な環境変数(GitHub Secretsに設定):
-    GMAIL_ADDRESS      送信元Gmailアドレス
-    GMAIL_APP_PASSWORD Gmailのアプリパスワード(16桁)
-    MAIL_TO            通知先メールアドレス(省略時はGMAIL_ADDRESSと同じ)
+    GOOGLE_SERVICE_ACCOUNT_JSON  サービスアカウントの認証情報JSON
+    SPREADSHEET_ID               書き込み先スプレッドシートのID
 """
 
 import base64
@@ -14,21 +14,17 @@ import io
 import os
 import re
 import time
-import smtplib
 import requests
 import pandas as pd
 import yfinance as yf
 from datetime import datetime, timezone, timedelta
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from email.mime.application import MIMEApplication
-from email.mime.image import MIMEImage
 import matplotlib
 matplotlib.use('Agg')
 import japanize_matplotlib  # noqa: F401
 import mplfinance as mpf
 import tempfile
 import jpholiday
+import sheets
 
 # ================= 設定 =================
 RATIO_THRESHOLD = 1.5          # 前場出来高 ÷ 7日平均全日出来高のしきい値
@@ -276,6 +272,7 @@ def screen(tickers_df):
                 "銘柄名": name_map.get(t, ""),
                 "市場": market_map.get(t, ""),
                 "規模": scale_map.get(t, ""),
+                "前場終値": round(float(ama_info["today_last"]), 1),
                 "前場出来高": ama_vol,
                 "7日平均出来高": int(avg_vol),
                 "出来高倍率": round(float(ratio), 2),
@@ -290,6 +287,8 @@ def screen(tickers_df):
             pattern_results.append({
                 "コード": t.replace(".T", ""),
                 "銘柄名": name_map.get(t, ""),
+                "市場": market_map.get(t, ""),
+                "前場終値": round(float(ama_info["today_last"]), 1),
                 "出来高倍率": round(float(ratio), 2),
                 "日付": datetime.now(JST).date(),
             })
@@ -300,6 +299,8 @@ def screen(tickers_df):
             narabiari_results.append({
                 "コード": t.replace(".T", ""),
                 "銘柄名": name_map.get(t, ""),
+                "市場": market_map.get(t, ""),
+                "前場終値": round(float(ama_info["today_last"]), 1),
                 "出来高倍率": round(float(ratio), 2),
                 "日付": datetime.now(JST).date(),
             })
@@ -363,175 +364,6 @@ def generate_chart(ticker, name, df):
                 os.unlink(tmp_path)
             except Exception:
                 pass
-
-
-def build_mail(result, data_date, sender, mail_to, charts=None, disclosures_map=None):
-    msg = MIMEMultipart()
-    msg["From"] = sender
-    msg["To"] = mail_to
-
-    if result.empty:
-        msg["Subject"] = f"[前場スクリーナー] {data_date} 該当なし"
-        body = f"{data_date} の前場で、出来高が7日平均の{RATIO_THRESHOLD}倍を超えた銘柄はありませんでした。"
-        msg.attach(MIMEText(body, "plain", "utf-8"))
-        return msg
-
-    msg["Subject"] = f"[前場スクリーナー] {data_date} 該当 {len(result)} 銘柄"
-
-    rows = []
-    for _, r in result.iterrows():
-        code = r['コード']
-        url = f"https://finance.yahoo.co.jp/quote/{code}.T"
-        cid = f"chart_{code}"
-        marks = []
-        if r.get("上離れ赤2本"):
-            marks.append("★")
-        if r.get("上放れ並び赤"):
-            marks.append("◆")
-        pattern_mark = " ".join(marks)
-        rows.append(
-            f"<tr>"
-            f"<td><a href='{url}'>{code} {r['銘柄名']}</a> {pattern_mark}</td>"
-            f"<td style='text-align:right'>{r['出来高倍率']}倍</td>"
-            f"</tr>"
-        )
-        if charts and (code + ".T") in charts and charts[code + ".T"]:
-            rows.append(
-                f"<tr><td colspan='2'><img src='cid:{cid}' style='max-width:100%'></td></tr>"
-            )
-        discs = disclosures_map.get(code, []) if disclosures_map else []
-        if discs:
-            links = "　".join(f"<a href='{u}'>{t}</a>" for t, u in discs)
-            rows.append(f"<tr><td colspan='2' style='font-size:0.9em'>📋 開示: {links}</td></tr>")
-
-    html = f"""<html><body>
-<p><a href="{PAGES_BASE_URL}/ama.html">Webで確認する →</a></p>
-<p>{data_date} 前場出来高急増銘柄（7日平均の{RATIO_THRESHOLD}倍超え）</p>
-<table border='1' cellpadding='4' cellspacing='0'>
-<tr><th>銘柄（★=上離れ赤2本 ◆=上放れ並び赤）</th><th>倍率</th></tr>
-{"".join(rows)}
-</table>
-<p>詳細は添付CSVをご覧ください。</p>
-</body></html>"""
-
-    related = MIMEMultipart("related")
-    related.attach(MIMEText(html, "html", "utf-8"))
-    if charts:
-        for ticker, img_bytes in charts.items():
-            if img_bytes:
-                code = ticker.replace(".T", "")
-                img_part = MIMEImage(img_bytes)
-                img_part.add_header("Content-ID", f"<chart_{code}>")
-                img_part.add_header("Content-Disposition", "inline", filename=f"{code}.png")
-                related.attach(img_part)
-    msg.attach(related)
-
-    csv_bytes = result.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
-    part = MIMEApplication(csv_bytes, Name=f"ama_spike_{data_date}.csv")
-    part["Content-Disposition"] = f'attachment; filename="ama_spike_{data_date}.csv"'
-    msg.attach(part)
-
-    return msg
-
-
-def build_pattern_mail(pattern_result, data_date, sender, mail_to, charts=None):
-    msg = MIMEMultipart()
-    msg["From"] = sender
-    msg["To"] = mail_to
-    msg["Subject"] = f"[上離れ赤2本] {data_date} 該当 {len(pattern_result)} 銘柄"
-
-    rows = []
-    for _, r in pattern_result.iterrows():
-        code = r["コード"]
-        url = f"https://finance.yahoo.co.jp/quote/{code}.T"
-        cid = f"chart_{code}"
-        rows.append(
-            f"<tr>"
-            f"<td><a href='{url}'>{code} {r['銘柄名']}</a></td>"
-            f"<td style='text-align:right'>{r['出来高倍率']}倍</td>"
-            f"</tr>"
-        )
-        if charts and (code + ".T") in charts and charts[code + ".T"]:
-            rows.append(
-                f"<tr><td colspan='2'><img src='cid:{cid}' style='max-width:100%'></td></tr>"
-            )
-
-    html = f"""<html><body>
-<p><a href="{PAGES_BASE_URL}/ama.html">Webで確認する →</a></p>
-<p>{data_date} 前場時点で上離れ赤2本パターン検出銘柄（平均売買代金10億円/日以上）</p>
-<table border='1' cellpadding='4' cellspacing='0'>
-<tr><th>銘柄</th><th>前場出来高倍率</th></tr>
-{"".join(rows)}
-</table>
-</body></html>"""
-
-    related = MIMEMultipart("related")
-    related.attach(MIMEText(html, "html", "utf-8"))
-    if charts:
-        for ticker, img_bytes in charts.items():
-            code = ticker.replace(".T", "")
-            if img_bytes and any(r["コード"] == code for _, r in pattern_result.iterrows()):
-                img_part = MIMEImage(img_bytes)
-                img_part.add_header("Content-ID", f"<chart_{code}>")
-                img_part.add_header("Content-Disposition", "inline", filename=f"{code}.png")
-                related.attach(img_part)
-    msg.attach(related)
-
-    return msg
-
-
-def build_narabiari_pattern_mail(narabiari_result, data_date, sender, mail_to, charts=None):
-    msg = MIMEMultipart()
-    msg["From"] = sender
-    msg["To"] = mail_to
-    msg["Subject"] = f"[上放れ並び赤] {data_date} 該当 {len(narabiari_result)} 銘柄"
-
-    rows = []
-    for _, r in narabiari_result.iterrows():
-        code = r["コード"]
-        url = f"https://finance.yahoo.co.jp/quote/{code}.T"
-        cid = f"chart_{code}"
-        rows.append(
-            f"<tr>"
-            f"<td><a href='{url}'>{code} {r['銘柄名']}</a></td>"
-            f"<td style='text-align:right'>{r['出来高倍率']}倍</td>"
-            f"</tr>"
-        )
-        if charts and (code + ".T") in charts and charts[code + ".T"]:
-            rows.append(
-                f"<tr><td colspan='2'><img src='cid:{cid}' style='max-width:100%'></td></tr>"
-            )
-
-    html = f"""<html><body>
-<p><a href="{PAGES_BASE_URL}/ama.html">Webで確認する →</a></p>
-<p>{data_date} 前場時点で上放れ並び赤パターン検出銘柄（平均売買代金10億円/日以上）</p>
-<p>上放れ並び赤: ギャップアップ後、前日と同水準・同実体サイズの陽線が続く強い上昇シグナル</p>
-<table border='1' cellpadding='4' cellspacing='0'>
-<tr><th>銘柄</th><th>前場出来高倍率</th></tr>
-{"".join(rows)}
-</table>
-</body></html>"""
-
-    related = MIMEMultipart("related")
-    related.attach(MIMEText(html, "html", "utf-8"))
-    if charts:
-        for ticker, img_bytes in charts.items():
-            code = ticker.replace(".T", "")
-            if img_bytes and any(r["コード"] == code for _, r in narabiari_result.iterrows()):
-                img_part = MIMEImage(img_bytes)
-                img_part.add_header("Content-ID", f"<chart_{code}>")
-                img_part.add_header("Content-Disposition", "inline", filename=f"{code}.png")
-                related.attach(img_part)
-    msg.attach(related)
-
-    return msg
-
-
-def send_mail(msg, sender, app_password):
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-        server.login(sender, app_password)
-        server.send_message(msg)
-    print(f"メール送信完了 → {msg['To']}")
 
 
 def _write_index_html(data_date: str):
@@ -651,13 +483,6 @@ def main():
         print(f"{today} は土日または祝日のため処理をスキップします。")
         return
 
-    sender = os.environ.get("GMAIL_ADDRESS")
-    app_password = os.environ.get("GMAIL_APP_PASSWORD")
-    mail_to = os.environ.get("MAIL_TO") or sender or ""
-    mail_enabled = bool(sender and app_password)
-    if not mail_enabled:
-        print("GMAIL_ADDRESS / GMAIL_APP_PASSWORD が未設定のため、メール送信をスキップします。")
-
     tickers_df = get_ticker_list()
     result, pattern_result, narabiari_result, chart_data = screen(tickers_df)
 
@@ -676,28 +501,16 @@ def main():
         if t in chart_data:
             charts[t] = generate_chart(t, name_map.get(t, ""), chart_data[t])
 
-    if mail_enabled:
-        build_html_page(result, pattern_result, narabiari_result, today_jst, charts)
+    build_html_page(result, pattern_result, narabiari_result, today_jst, charts)
 
     if result.empty:
         print("出来高急増：該当銘柄なし。")
     else:
         result = result.sort_values("出来高倍率", ascending=False).reset_index(drop=True)
         print(result.to_string(index=False))
-
-        if mail_enabled:
-            print("開示情報を取得中...")
-            disclosures_map = {}
-            for _, row in result.iterrows():
-                code = row["コード"]
-                discs = get_kabutan_disclosures(code, today_jst)
-                if discs:
-                    disclosures_map[code] = discs
-                    print(f"  {code}: {len(discs)}件")
-                time.sleep(0.3)
-
-            msg = build_mail(result, today_jst, sender, mail_to, charts, disclosures_map)
-            send_mail(msg, sender, app_password)
+        sheets.append_detections(
+            sheets.build_records(result, "前場急増", price_col="前場終値")
+        )
 
     if pattern_result.empty:
         print("上離れ赤2本：該当銘柄なし。")
@@ -712,10 +525,12 @@ def main():
         narabiari_result = narabiari_result.sort_values("出来高倍率", ascending=False).reset_index(drop=True)
         print(f"上放れ並び赤 該当 {len(narabiari_result)} 銘柄")
         print(narabiari_result.to_string(index=False))
+        sheets.append_detections(
+            sheets.build_records(narabiari_result, "上放れ並び赤", price_col="前場終値")
+        )
 
-        if mail_enabled:
-            msg = build_narabiari_pattern_mail(narabiari_result, today_jst, sender, mail_to, charts)
-            send_mail(msg, sender, app_password)
+    # 過去に検出した銘柄の1ヶ月後の株価を埋める
+    sheets.fill_followups()
 
 
 if __name__ == "__main__":

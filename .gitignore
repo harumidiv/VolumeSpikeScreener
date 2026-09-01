@@ -22,3 +22,5 @@ venv/
 # ローカル実行時の出力・秘密情報
 volume_spike_*.csv
 .env
+yutai_master.csv
+output/
